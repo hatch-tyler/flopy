@@ -48,7 +48,7 @@ __all__ = [
     "seawat",
     "modpath",
     "modflowlgr",
-    "modflowusg",
+    "mfusg",
     "utils",
     "plot",
     "export",
