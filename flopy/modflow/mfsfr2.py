@@ -10,7 +10,7 @@ from numpy.lib import recfunctions
 
 from ..pakbase import Package
 from ..utils import MfList
-from ..utils.flopy_io import line_parse
+from ..utils.flopy_io import line_parse, get_next_line, line_strip
 from ..utils.optionblock import OptionBlock
 from ..utils.recarray_utils import create_empty_recarray
 
@@ -466,7 +466,7 @@ class ModflowSfr2(Package):
         self.flwtol = flwtol
 
         # Dataset 2.
-        self.reach_data = self.get_empty_reach_data(np.abs(self._nstrm))
+        self.reach_data = self.get_empty_reach_data(np.abs(self._nstrm), structured=self.parent.structured)
         if reach_data is not None:
             if isinstance(reach_data, pd.DataFrame):
                 reach_data = reach_data.to_records(index=False)
@@ -794,6 +794,8 @@ class ModflowSfr2(Package):
         transroute = False
         reachinput = False
         structured = model.structured
+        version = model.version
+        
         if nper is None:
             nper = model.nper
             nper = (
@@ -810,9 +812,9 @@ class ModflowSfr2(Package):
             line = f.readline()
             if line[0] != "#":
                 break
-
+        
         options = None
-        if model.version == "mfnwt" and "options" in line.lower():
+        if version == "mfnwt" and "options" in line.lower():
             options = OptionBlock.load_options(f, ModflowSfr2)
 
         else:
@@ -832,7 +834,7 @@ class ModflowSfr2(Package):
                     break
 
         if options is not None:
-            line = f.readline()
+            line = get_next_line(f)
             # check for 1b in modflow-2005
             if "tabfile" in line.lower():
                 t = line.strip().split()
@@ -866,7 +868,7 @@ class ModflowSfr2(Package):
             weight,
             flwtol,
             option,
-        ) = _parse_1c(line, reachinput=reachinput, transroute=transroute)
+        ) = _parse_1c(line, reachinput=reachinput, transroute=transroute, version=version)
 
         # item 2
         # set column names, dtypes
@@ -886,7 +888,9 @@ class ModflowSfr2(Package):
 
         tmp = np.array(lines, dtype=dtypes)
         # initialize full reach_data array with all possible columns
-        reach_data = ModflowSfr2.get_empty_reach_data(len(lines))
+        reach_data = ModflowSfr2.get_empty_reach_data(len(lines), structured=structured)
+        
+        # fill in reach_data array with data read from the input file
         for n in names:
             reach_data[n] = tmp[
                 n
@@ -905,7 +909,7 @@ class ModflowSfr2(Package):
         aux_variables = {}  # not sure where the auxiliary variables are supposed to go
         for i in range(0, nper):
             # Dataset 5
-            dataset_5[i] = _get_dataset(f.readline(), [-1, 0, 0, 0])
+            dataset_5[i] = _get_dataset(line_strip(get_next_line(f)), [-1, 0, 0, 0])
             itmp = dataset_5[i][0]
             if itmp > 0:
                 # Item 6
@@ -918,7 +922,7 @@ class ModflowSfr2(Package):
                 current_6d = {}
                 current_6e = {}
                 for j in range(itmp):
-                    dataset_6a = _parse_6a(f.readline(), option)
+                    dataset_6a = _parse_6a(get_next_line(f), option)
                     current_aux[j] = dataset_6a[-1]
                     dataset_6a = dataset_6a[:-1]  # drop xyz
                     icalc = dataset_6a[1]
@@ -934,7 +938,7 @@ class ModflowSfr2(Package):
                         isfropt in [2, 3] and icalc == 1 and i > 1
                     ) and not (isfropt in [1, 2, 3] and icalc >= 2):
                         dataset_6b = _parse_6bc(
-                            f.readline(),
+                            get_next_line(f),
                             icalc,
                             nstrm,
                             isfropt,
@@ -942,7 +946,7 @@ class ModflowSfr2(Package):
                             per=i,
                         )
                         dataset_6c = _parse_6bc(
-                            f.readline(),
+                            get_next_line(f),
                             icalc,
                             nstrm,
                             isfropt,
@@ -964,7 +968,7 @@ class ModflowSfr2(Package):
                             dataset_6d = []
                             for _ in range(2):
                                 dataset_6d.append(
-                                    _get_dataset(f.readline(), [0.0] * 8)
+                                    _get_dataset(get_next_line(f), [0.0] * 8)
                                 )
                             current_6d[temp_nseg] = dataset_6d
                     if icalc == 4:
@@ -972,7 +976,7 @@ class ModflowSfr2(Package):
                         dataset_6e = []
                         for _ in range(3):
                             dataset_6e.append(
-                                _get_dataset(f.readline(), [0.0] * nstrpts)
+                                _get_dataset(get_next_line(f), [0.0] * nstrpts)
                             )
                         current_6e[temp_nseg] = dataset_6e
 
@@ -3214,7 +3218,7 @@ def _print_rec_array(array, cols=None, delimiter=" ", float_format="{!s}"):
     return txt
 
 
-def _parse_1c(line, reachinput, transroute):
+def _parse_1c(line, reachinput, transroute, version):
     """
     Parse Data Set 1c for SFR2 package.
     See https://water.usgs.gov/nrp/gwsoftware/modflow2000/MFDOC/sfr.html
@@ -3239,8 +3243,10 @@ def _parse_1c(line, reachinput, transroute):
     nparseg = int(line.pop(0))
     const = float(line.pop(0))
     dleak = float(line.pop(0))
-    ipakcb = int(line.pop(0))
+    ipakcb = int(line.pop(0)) # this is used to represent istcb1 in the online guide to MODFLOW and MODFLOW-USG docs
     istcb2 = int(line.pop(0))
+
+    #print(f"{nstrm=}\n{nss=}\n{nsfrpar=}\n{nparseg=}\n{const=}\n{dleak=}\n{ipakcb=}\n{istcb2=}")
 
     isfropt, nstrail, isuzn, nsfrsets = na, na, na, na
     if reachinput:
@@ -3258,12 +3264,21 @@ def _parse_1c(line, reachinput, transroute):
             nsfrsets = int(line.pop(0))
 
     irtflg, numtim, weight, flwtol = na, na, na, na
-    if nstrm < 0 or transroute:
-        irtflg = int(_pop_item(line))
-        if irtflg > 0:
-            numtim = int(line.pop(0))
-            weight = float(line.pop(0))
-            flwtol = float(line.pop(0))
+    # in MODFLOW-USG, it appears nstrm < 0 does not trigger this. Only transroute will trigger reading these values.
+    if version == "mfusg":
+        if transroute:
+            irtflg = int(_pop_item(line))
+            if irtflg > 0:
+                numtim = int(line.pop(0))
+                weight = float(line.pop(0))
+                flwtol = float(line.pop(0))
+    else:
+        if nstrm < 0 or transroute:
+            irtflg = int(_pop_item(line))
+            if irtflg > 0:
+                numtim = int(line.pop(0))
+                weight = float(line.pop(0))
+                flwtol = float(line.pop(0))
 
     # auxiliary variables (MODFLOW-LGR)
     option = [
